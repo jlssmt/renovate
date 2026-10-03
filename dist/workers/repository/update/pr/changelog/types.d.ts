@@ -1,0 +1,44 @@
+//#region lib/workers/repository/update/pr/changelog/types.d.ts
+export interface ChangeLogNotes {
+  body?: string;
+  id?: number;
+  name?: string;
+  tag?: string;
+  notesSourceUrl: string;
+  url: string;
+}
+export interface ChangeLogChange {
+  date: Date;
+  message: string;
+  sha: string;
+}
+export interface ChangeLogRelease {
+  changes: ChangeLogChange[];
+  compare: {
+    url?: string;
+  };
+  date: string | Date;
+  releaseNotes?: ChangeLogNotes;
+  version: string;
+  gitRef: string;
+}
+export type ChangeLogPlatform = 'bitbucket' | 'bitbucket-server' | 'forgejo' | 'gitea' | 'github' | 'gitlab';
+export interface ChangeLogProject {
+  packageName?: string;
+  depName?: string;
+  type: ChangeLogPlatform;
+  apiBaseUrl: string;
+  baseUrl: string;
+  repository: string;
+  sourceUrl: string;
+  sourceDirectory?: string;
+}
+export type ChangeLogError = 'MissingBitbucketToken' | 'MissingGithubToken' | 'MissingGitlabToken';
+export interface ChangeLogResult {
+  hasReleaseNotes?: boolean;
+  project?: ChangeLogProject;
+  versions?: ChangeLogRelease[];
+  error?: ChangeLogError;
+}
+//#endregion
+//# sourceMappingURL=types.d.ts.map

@@ -1,0 +1,13 @@
+//#region lib/data/abandonments.json
+var abandonments_default = {
+	$schema: "../../tools/schemas/abandonments-schema.json",
+	npm: {
+		"@types/*": "eternal",
+		"eslint-plugin-no-only-tests": "5 years",
+		"lodash": "6 years"
+	}
+};
+//#endregion
+export { abandonments_default as default };
+
+//# sourceMappingURL=abandonments.js.map

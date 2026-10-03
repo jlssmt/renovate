@@ -1,0 +1,41 @@
+import { Json } from "../../../util/schema-utils/index.js";
+import { z } from "zod/v4";
+//#region lib/modules/manager/nix/schema.ts
+const InputType = z.enum([
+	"file",
+	"git",
+	"github",
+	"gitlab",
+	"indirect",
+	"path",
+	"sourcehut",
+	"tarball"
+]);
+const LockedInput = z.object({
+	ref: z.string().optional(),
+	rev: z.string().optional(),
+	type: InputType,
+	url: z.string().optional()
+});
+const OriginalInput = z.object({
+	host: z.string().optional(),
+	owner: z.string().optional(),
+	repo: z.string().optional(),
+	ref: z.string().optional(),
+	rev: z.string().optional(),
+	type: InputType,
+	url: z.string().optional()
+});
+const NixInput = z.object({
+	inputs: z.record(z.string(), z.string().or(z.array(z.string()))).optional(),
+	locked: LockedInput.optional(),
+	original: OriginalInput.optional()
+});
+const NixFlakeLock = Json.pipe(z.object({
+	nodes: z.record(z.string(), NixInput),
+	version: z.literal(7)
+}));
+//#endregion
+export { NixFlakeLock };
+
+//# sourceMappingURL=schema.js.map

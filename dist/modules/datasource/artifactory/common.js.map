@@ -1,0 +1,1 @@
+{"version":3,"file":"common.js","names":[],"sources":["../../../../lib/modules/datasource/artifactory/common.ts"],"sourcesContent":["export const datasource = 'artifactory';\n"],"mappings":";AAAA,MAAa,aAAa"}

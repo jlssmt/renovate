@@ -1,0 +1,23 @@
+//#region lib/util/object.ts
+/**
+* This is a workaround helper to allow the usage of 'unknown' in
+* a type-guard function while checking that keys exist.
+*
+* @see https://github.com/microsoft/TypeScript/issues/21732
+* @see https://stackoverflow.com/a/58630274
+*/
+function hasKey(k, o) {
+	return o && typeof o === "object" && k in o;
+}
+/**
+* Coerce a value to a object with optional default value.
+* @param val value to coerce
+* @returns the coerced value.
+*/
+function coerceObject(val, def) {
+	return val ?? def ?? {};
+}
+//#endregion
+export { coerceObject, hasKey };
+
+//# sourceMappingURL=object.js.map

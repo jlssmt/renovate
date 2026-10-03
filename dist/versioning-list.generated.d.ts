@@ -1,0 +1,5 @@
+//#region lib/versioning-list.generated.d.ts
+export declare const AllVersioningsListLiteral: readonly ["apk", "aws-eks-addon", "aws-machine-image", "azure-rest-api", "bazel-module", "cargo", "composer", "conan", "conda", "deb", "debian", "deno", "devbox", "docker", "elm", "exact", "git", "github-actions", "glasskube", "go-mod-directive", "gradle", "hashicorp", "helm", "hermit", "hex", "ivy", "kubernetes-api", "lambda-node", "loose", "maven", "nixpkgs", "node", "npm", "nuget", "paket", "pep440", "perl", "poetry", "pvp", "python", "redhat", "regex", "rez", "rpm", "ruby", "rust-release-channel", "same-major", "semver", "semver-coerced", "semver-partial", "swift", "ubuntu", "unity3d", "unity3d-packages"];
+export type VersioningName = typeof AllVersioningsListLiteral[number];
+//#endregion
+//# sourceMappingURL=versioning-list.generated.d.ts.map

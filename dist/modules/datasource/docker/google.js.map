@@ -1,0 +1,1 @@
+{"version":3,"file":"google.js","names":[],"sources":["../../../../lib/modules/datasource/docker/google.ts"],"sourcesContent":["import { regEx } from '../../../util/regex.ts';\n\nexport const googleRegex = regEx(\n  /(?:(?:(?:eu|us|asia)\\.)?gcr\\.io|[a-z0-9-]+-docker\\.pkg\\.dev)/,\n);\n"],"mappings":";;AAEA,MAAa,cAAc,MACzB,8DACF"}

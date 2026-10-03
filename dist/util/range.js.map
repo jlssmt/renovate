@@ -1,0 +1,1 @@
+{"version":3,"file":"range.js","names":[],"sources":["../../lib/util/range.ts"],"sourcesContent":["export function* range(\n  start: number,\n  end: number,\n): Generator<number, void, void> {\n  for (let i = start; i <= end; i += 1) {\n    yield i;\n  }\n  return;\n}\n"],"mappings":";AAAA,UAAiB,MACf,OACA,KAC+B;CAC/B,KAAK,IAAI,IAAI,OAAO,KAAK,KAAK,KAAK,GACjC,MAAM;AAGV"}

@@ -1,0 +1,34 @@
+import { newlineRegex, regEx } from "../../../util/regex.js";
+import { hashStream } from "../../../util/hash.js";
+import { createCacheReadStream } from "../../../util/fs/index.js";
+//#region lib/modules/datasource/deb/checksum.ts
+/**
+* Parses the SHA256 checksum for a specified package path from the InRelease content.
+*
+* @param inReleaseContent - content of the InRelease file
+* @param packagePath - path of the package file (e.g., 'contrib/binary-amd64/Packages.gz')
+* @returns The SHA256 checksum if found, otherwise undefined
+*/
+function parseChecksumsFromInRelease(inReleaseContent, packagePath) {
+	const lines = inReleaseContent.split(newlineRegex);
+	const regex = regEx(`([a-f0-9]{64})\\s+\\d+\\s+${RegExp.escape(packagePath)}$`);
+	for (const line of lines) {
+		const match = regex.exec(line);
+		if (match) return match[1];
+	}
+	return null;
+}
+/**
+* Computes the SHA256 checksum of a specified file.
+*
+* @param filePath - path of the file
+* @returns resolves to the SHA256 checksum
+*/
+function computeFileChecksum(filePath) {
+	const stream = createCacheReadStream(filePath);
+	return hashStream(stream, "sha256");
+}
+//#endregion
+export { computeFileChecksum, parseChecksumsFromInRelease };
+
+//# sourceMappingURL=checksum.js.map

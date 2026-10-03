@@ -1,0 +1,68 @@
+import "../../../constants/error-messages.js";
+import { logger } from "../../../logger/index.js";
+import { findLocalSiblingOrParent, readLocalFile, writeLocalFile } from "../../../util/fs/index.js";
+import { artifactErrorResult, fileAddition, resolveToolConstraint } from "../util.js";
+import { withGitEnvironment } from "../../../util/git/exec.js";
+import { quote } from "shlex";
+//#region lib/modules/manager/conan/artifacts.ts
+const gitExec = withGitEnvironment(["conan"]);
+async function conanLockUpdate(conanFilePath, isLockFileMaintenance, conanConstraint, pythonConstraint) {
+	const command = `conan lock create ${quote(conanFilePath)}${isLockFileMaintenance ? " --lockfile=\"\"" : ""}`;
+	await gitExec(command, {
+		toolConstraints: [{
+			toolName: "python",
+			constraint: pythonConstraint
+		}, {
+			toolName: "conan",
+			constraint: conanConstraint
+		}],
+		docker: {}
+	});
+}
+async function updateArtifacts(updateArtifact) {
+	const { packageFileName, updatedDeps, newPackageFileContent, config } = updateArtifact;
+	logger.trace(`conan.updateArtifacts(${packageFileName})`);
+	const { isLockFileMaintenance } = config;
+	if (updatedDeps.length === 0 && !isLockFileMaintenance) {
+		logger.trace("No conan.lock dependencies to update");
+		return null;
+	}
+	const lockFileName = await findLocalSiblingOrParent(packageFileName, "conan.lock");
+	if (!lockFileName) {
+		logger.trace("No conan.lock found");
+		return null;
+	}
+	const existingLockFileContent = await readLocalFile(lockFileName);
+	if (!existingLockFileContent) {
+		logger.debug(`${lockFileName} read operation failed`);
+		return null;
+	}
+	try {
+		await writeLocalFile(packageFileName, newPackageFileContent);
+		logger.trace(`Updating ${lockFileName}`);
+		await conanLockUpdate(packageFileName, isLockFileMaintenance, await resolveToolConstraint(config, "conan"), await resolveToolConstraint(config, "python"));
+		const newLockFileContent = await readLocalFile(lockFileName);
+		if (!newLockFileContent) {
+			logger.debug(`New ${lockFileName} read operation failed`);
+			return null;
+		}
+		if (existingLockFileContent === newLockFileContent) {
+			logger.trace(`${lockFileName} is unchanged`);
+			return null;
+		}
+		logger.trace(`Returning updated ${lockFileName}`);
+		return [fileAddition(lockFileName, newLockFileContent)];
+	} catch (err) {
+		if (err.message === "temporary-error") throw err;
+		logger.debug({
+			err,
+			packageFileName,
+			lockFileName
+		}, "Lockfile update failed");
+		return artifactErrorResult(lockFileName, err);
+	}
+}
+//#endregion
+export { updateArtifacts };
+
+//# sourceMappingURL=artifacts.js.map

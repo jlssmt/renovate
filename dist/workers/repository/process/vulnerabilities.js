@@ -1,0 +1,339 @@
+import { regEx } from "../../../util/regex.js";
+import { coerceArray } from "../../../util/array.js";
+import { titleCase } from "../../../util/string.js";
+import { logger } from "../../../logger/index.js";
+import { getFixedVersionConstraint, getLastAffectedVersionConstraint } from "../../../util/vulnerability/utils.js";
+import { mergeChildConfig } from "../../../config/utils.js";
+import { instrument } from "../../../instrumentation/index.js";
+import { get } from "../../../modules/versioning/index.js";
+import { all } from "../../../util/promises.js";
+import { getDefaultVersioning } from "../../../modules/datasource/common.js";
+import { getManagerConfig } from "../../../config/index.js";
+import { sanitizeMarkdown } from "../../../util/markdown.js";
+import { datasourceToOsvEcosystem } from "../../../util/vulnerability/ecosystem.js";
+import { isEmptyArray, isNonEmptyString, isNullOrUndefined, isTruthy } from "@sindresorhus/is";
+import { z } from "zod/v4";
+import { OsvOffline } from "@renovatebot/osv-offline";
+import * as _aeCvss from "ae-cvss-calculator";
+//#region lib/workers/repository/process/vulnerabilities.ts
+const { fromVector } = _aeCvss.default;
+var Vulnerabilities = class Vulnerabilities {
+	static osvOffline;
+	osvOffline;
+	static datasourceEcosystemMap = datasourceToOsvEcosystem;
+	constructor(osvOffline) {
+		this.osvOffline = osvOffline;
+	}
+	static initialize() {
+		Vulnerabilities.osvOffline ??= OsvOffline.create();
+		return Vulnerabilities.osvOffline;
+	}
+	static async create() {
+		const osvOffline = await Vulnerabilities.initialize();
+		return new Vulnerabilities(osvOffline);
+	}
+	async appendVulnerabilityPackageRules(config, packageFiles) {
+		const dependencyVulnerabilities = await this.fetchDependencyVulnerabilities(config, packageFiles);
+		config.packageRules ??= [];
+		for (const { vulnerabilities, versioningApi } of dependencyVulnerabilities) {
+			const groupPackageRules = [];
+			for (const vulnerability of vulnerabilities) {
+				const rule = this.vulnerabilityToPackageRules(vulnerability);
+				if (isNullOrUndefined(rule)) continue;
+				groupPackageRules.push(rule);
+			}
+			this.sortByFixedVersion(groupPackageRules, versioningApi);
+			config.packageRules.push(...groupPackageRules);
+		}
+	}
+	async fetchVulnerabilities(config, packageFiles) {
+		return (await this.fetchDependencyVulnerabilities(config, packageFiles)).flatMap((group) => group.vulnerabilities);
+	}
+	async fetchDependencyVulnerabilities(config, packageFiles) {
+		const allManagerJobs = Object.keys(packageFiles).map((manager) => this.fetchManagerVulnerabilities(config, packageFiles, manager));
+		return (await Promise.all(allManagerJobs)).flat();
+	}
+	async fetchManagerVulnerabilities(config, packageFiles, manager) {
+		const managerConfig = getManagerConfig(config, manager);
+		const queue = packageFiles[manager].map((pFile) => () => this.fetchManagerPackageFileVulnerabilities(managerConfig, pFile));
+		logger.trace({
+			manager,
+			queueLength: queue.length
+		}, "fetchManagerVulnerabilities starting");
+		const result = (await all(queue)).flat();
+		logger.trace({ manager }, "fetchManagerVulnerabilities finished");
+		return result;
+	}
+	async fetchManagerPackageFileVulnerabilities(managerConfig, pFile) {
+		const { packageFile } = pFile;
+		const packageFileConfig = mergeChildConfig(managerConfig, pFile);
+		const { manager } = packageFileConfig;
+		const queue = pFile.deps.map((dep) => () => this.fetchDependencyVulnerability(packageFileConfig, dep));
+		logger.trace({
+			manager,
+			packageFile,
+			queueLength: queue.length
+		}, "fetchManagerPackageFileVulnerabilities starting with concurrency");
+		const result = await all(queue);
+		logger.trace({ packageFile }, "fetchManagerPackageFileVulnerabilities finished");
+		return result.filter(isTruthy);
+	}
+	async fetchDependencyVulnerability(packageFileConfig, dep) {
+		const ecosystem = Vulnerabilities.datasourceEcosystemMap[dep.datasource];
+		if (!ecosystem) {
+			logger.trace(`Cannot map datasource ${dep.datasource} to OSV ecosystem`);
+			return null;
+		}
+		const packageName = dep.packageName ?? dep.depName;
+		let osvPackageName = packageName;
+		let depType;
+		if (ecosystem === "PyPI") osvPackageName = osvPackageName.toLowerCase().replace(regEx(/[_.-]+/g), "-");
+		else if (ecosystem === "Go" && packageName === "go") {
+			if (dep.depType !== "toolchain") return null;
+			osvPackageName = "stdlib";
+			depType = dep.depType;
+		}
+		try {
+			const osvVulnerabilities = await instrument("get OSV vulnerabilities", () => this.osvOffline.getVulnerabilities(ecosystem, osvPackageName), { attributes: {
+				osvPackageName,
+				ecosystem
+			} });
+			if (isNullOrUndefined(osvVulnerabilities) || isEmptyArray(osvVulnerabilities)) {
+				logger.trace(`No vulnerabilities found in OSV database for ${packageName}`);
+				return null;
+			}
+			const depVersion = dep.lockedVersion ?? dep.currentVersion ?? dep.currentValue;
+			const versioning = dep.versioning ?? getDefaultVersioning(dep.datasource);
+			const versioningApi = get(versioning);
+			if (!versioningApi.isVersion(depVersion)) {
+				logger.debug(`Skipping vulnerability lookup for package ${packageName} due to unsupported version ${depVersion}`);
+				return null;
+			}
+			const vulnerabilities = [];
+			for (const osvVulnerability of osvVulnerabilities) {
+				if (osvVulnerability.withdrawn) {
+					logger.trace(`Skipping withdrawn vulnerability ${osvVulnerability.id}`);
+					continue;
+				}
+				this.skipMaliciousPackages(ecosystem, osvPackageName, depVersion, versioningApi, dep, packageFileConfig.manager, packageFileConfig.packageFile, osvVulnerability);
+				for (const affected of coerceArray(osvVulnerability.affected)) {
+					if (!this.isPackageVulnerable(ecosystem, osvPackageName, depVersion, affected, versioningApi)) continue;
+					logger.debug(`Vulnerability ${osvVulnerability.id} affects ${packageName} ${depVersion}`);
+					const fixedVersion = this.getFixedVersion(ecosystem, depVersion, affected, versioningApi);
+					vulnerabilities.push({
+						packageName,
+						osvPackageName,
+						vulnerability: osvVulnerability,
+						affected,
+						depType,
+						depVersion,
+						fixedVersion,
+						datasource: dep.datasource,
+						packageFileConfig
+					});
+				}
+			}
+			return {
+				vulnerabilities,
+				versioningApi
+			};
+		} catch (err) {
+			logger.warn({
+				err,
+				packageName
+			}, "Error fetching vulnerability information for package");
+			return null;
+		}
+	}
+	skipMaliciousPackages(ecosystem, osvPackageName, depVersion, versioningApi, dep, manager, packageFile, osvVulnerability) {
+		if (osvVulnerability.id.startsWith("MAL-")) for (const affected of coerceArray(osvVulnerability.affected)) {
+			if (this.isPackageVulnerable(ecosystem, osvPackageName, depVersion, affected, versioningApi)) {
+				logger.debug({
+					packageFile,
+					depName: dep.depName,
+					packageName: dep.packageName,
+					manager,
+					datasource: dep.datasource,
+					currentVersion: depVersion
+				}, `Marking ${dep.depName} as skipReason=malicious-version-in-use, as it is affected by ${osvVulnerability.id}`);
+				dep.skipReason = "malicious-version-in-use";
+				dep.skipStage = "lookup";
+			}
+			for (const update of coerceArray(dep.updates)) {
+				const newVersion = update.newVersion ?? update.newValue;
+				if (this.isPackageVulnerable(ecosystem, osvPackageName, newVersion, affected, versioningApi)) {
+					logger.debug({
+						packageFile,
+						depName: dep.depName,
+						packageName: dep.packageName,
+						manager,
+						datasource: dep.datasource,
+						currentVersion: depVersion,
+						newVersion
+					}, `Marking ${dep.depName}'s update to ${newVersion} as skipReason=malicious-update-proposed, as it is affected by ${osvVulnerability.id}`);
+					dep.skipReason = "malicious-update-proposed";
+					dep.skipStage = "lookup";
+				}
+			}
+		}
+	}
+	sortByFixedVersion(packageRules, versioningApi) {
+		const versionsCleaned = {};
+		for (const rule of packageRules) {
+			const version = rule.allowedVersions;
+			versionsCleaned[version] = version.replace(regEx(/[(),=> ]+/g), "");
+		}
+		packageRules.sort((a, b) => versioningApi.sortVersions(versionsCleaned[a.allowedVersions], versionsCleaned[b.allowedVersions]));
+	}
+	sortEvents(events, versioningApi) {
+		const sortedCopy = [];
+		let zeroEvent = null;
+		for (const event of events) if (event.introduced === "0") zeroEvent = event;
+		else if (versioningApi.isVersion(Object.values(event)[0])) sortedCopy.push(event);
+		else logger.debug({ event }, "Skipping OSV event with invalid version");
+		sortedCopy.sort((a, b) => versioningApi.sortVersions(Object.values(a)[0], Object.values(b)[0]));
+		if (zeroEvent) sortedCopy.unshift(zeroEvent);
+		return sortedCopy;
+	}
+	isPackageAffected(ecosystem, osvPackageName, affected) {
+		const pkg = affected.package;
+		if (pkg?.name !== osvPackageName) return false;
+		return pkg.ecosystem === ecosystem || pkg.ecosystem.startsWith(`${ecosystem}:`);
+	}
+	includedInVersions(depVersion, affected) {
+		return !!affected.versions?.includes(depVersion);
+	}
+	includedInRanges(depVersion, affected, versioningApi) {
+		for (const range of coerceArray(affected.ranges)) {
+			if (range.type === "GIT") continue;
+			let vulnerable = false;
+			for (const event of this.sortEvents(range.events, versioningApi)) if (isNonEmptyString(event.introduced) && (event.introduced === "0" || this.isVersionGtOrEq(depVersion, event.introduced, versioningApi))) vulnerable = true;
+			else if (isNonEmptyString(event.fixed) && this.isVersionGtOrEq(depVersion, event.fixed, versioningApi)) vulnerable = false;
+			else if (isNonEmptyString(event.last_affected) && this.isVersionGt(depVersion, event.last_affected, versioningApi)) vulnerable = false;
+			if (vulnerable) return true;
+		}
+		return false;
+	}
+	isPackageVulnerable(ecosystem, osvPackageName, depVersion, affected, versioningApi) {
+		return this.isPackageAffected(ecosystem, osvPackageName, affected) && (this.includedInVersions(depVersion, affected) || this.includedInRanges(depVersion, affected, versioningApi));
+	}
+	getFixedVersion(ecosystem, depVersion, affected, versioningApi) {
+		const fixedVersions = [];
+		const lastAffectedVersions = [];
+		for (const range of coerceArray(affected.ranges)) {
+			if (range.type === "GIT") continue;
+			for (const event of range.events) if (isNonEmptyString(event.fixed) && versioningApi.isVersion(event.fixed)) fixedVersions.push(event.fixed);
+			else if (isNonEmptyString(event.last_affected) && versioningApi.isVersion(event.last_affected)) lastAffectedVersions.push(event.last_affected);
+		}
+		fixedVersions.sort((a, b) => versioningApi.sortVersions(a, b));
+		const fixedVersion = fixedVersions.find((version) => this.isVersionGt(version, depVersion, versioningApi));
+		if (fixedVersion) return this.getFixedVersionByEcosystem(fixedVersion, ecosystem);
+		lastAffectedVersions.sort((a, b) => versioningApi.sortVersions(a, b));
+		const lastAffected = lastAffectedVersions.find((version) => this.isVersionGtOrEq(version, depVersion, versioningApi));
+		if (lastAffected) return this.getLastAffectedByEcosystem(lastAffected, ecosystem);
+		return null;
+	}
+	getFixedVersionByEcosystem(fixedVersion, ecosystem) {
+		return getFixedVersionConstraint(fixedVersion, ecosystem);
+	}
+	getLastAffectedByEcosystem(lastAffected, ecosystem) {
+		return getLastAffectedVersionConstraint(lastAffected, ecosystem);
+	}
+	isVersionGt(version, other, versioningApi) {
+		return versioningApi.isVersion(version) && versioningApi.isVersion(other) && versioningApi.isGreaterThan(version, other);
+	}
+	isVersionGtOrEq(version, other, versioningApi) {
+		return versioningApi.isVersion(version) && versioningApi.isVersion(other) && (versioningApi.equals(version, other) || versioningApi.isGreaterThan(version, other));
+	}
+	vulnerabilityToPackageRules(vul) {
+		const { vulnerability, affected, packageName, depType, depVersion, fixedVersion, datasource, packageFileConfig } = vul;
+		if (isNullOrUndefined(fixedVersion)) {
+			logger.debug(`No fixed version available for vulnerability ${vulnerability.id} in ${packageName} ${depVersion}`);
+			return null;
+		}
+		const versioning = getDefaultVersioning(datasource);
+		logger.debug({
+			datasource,
+			versioning
+		}, `Setting allowed version ${fixedVersion} to fix vulnerability ${vulnerability.id} in ${packageName} ${depVersion}`);
+		const severityDetails = this.extractSeverityDetails(vulnerability, affected);
+		return {
+			matchDatasources: [datasource],
+			matchPackageNames: [packageName],
+			...depType ? { matchDepTypes: [depType] } : {},
+			matchCurrentVersion: depVersion,
+			versioning,
+			allowedVersions: fixedVersion,
+			isVulnerabilityAlert: true,
+			vulnerabilitySeverity: severityDetails.severityLevel,
+			prBodyNotes: this.generatePrBodyNotes(vulnerability, affected),
+			force: { ...packageFileConfig.vulnerabilityAlerts }
+		};
+	}
+	static evaluateCvssVector(vector) {
+		const CvssJson = z.object({
+			baseScore: z.number().default(0),
+			baseSeverity: z.string().toUpperCase().default("UNKNOWN")
+		});
+		try {
+			const parsedCvssScore = fromVector(vector);
+			const res = CvssJson.parse(parsedCvssScore?.createJsonSchema());
+			return [res.baseScore.toFixed(1), res.baseSeverity];
+		} catch {
+			logger.debug(`Error processing CVSS vector ${vector}`);
+		}
+		return ["", ""];
+	}
+	generatePrBodyNotes(vulnerability, affected) {
+		let aliases = [vulnerability.id].concat(coerceArray(vulnerability.aliases)).sort();
+		aliases = aliases.map((id) => {
+			if (id.startsWith("CVE-")) return `[${id}](https://nvd.nist.gov/vuln/detail/${id})`;
+			if (id.startsWith("GHSA-")) return `[${id}](https://github.com/advisories/${id})`;
+			if (id.startsWith("GO-")) return `[${id}](https://pkg.go.dev/vuln/${id})`;
+			if (id.startsWith("RUSTSEC-")) return `[${id}](https://rustsec.org/advisories/${id}.html)`;
+			return id;
+		});
+		let content = "\n\n---\n\n### ";
+		content += vulnerability.summary ? `${vulnerability.summary}\n` : "";
+		content += `${aliases.join(" / ")}\n`;
+		content += `\n<details>\n<summary>More information</summary>\n`;
+		const details = vulnerability.details?.replace(regEx(/^#{1,4} /gm), "##### ");
+		content += `#### Details\n${details ?? "No details."}\n`;
+		content += "#### Severity\n";
+		const severityDetails = this.extractSeverityDetails(vulnerability, affected);
+		if (severityDetails.cvssVector) {
+			content += `- CVSS Score: ${severityDetails.score}\n`;
+			content += `- Vector String: \`${severityDetails.cvssVector}\`\n`;
+		} else content += `${titleCase(severityDetails.severityLevel)}\n`;
+		content += `\n#### References\n${vulnerability.references?.map((ref) => {
+			return `- [${ref.url}](${ref.url})`;
+		}).join("\n") ?? "No references."}`;
+		let attribution = "";
+		if (vulnerability.id.startsWith("GHSA-")) attribution = ` and the [GitHub Advisory Database](https://github.com/github/advisory-database) ([CC-BY 4.0](https://github.com/github/advisory-database/blob/main/LICENSE.md))`;
+		else if (vulnerability.id.startsWith("GO-")) attribution = ` and the [Go Vulnerability Database](https://github.com/golang/vulndb) ([CC-BY 4.0](https://github.com/golang/vulndb#license))`;
+		else if (vulnerability.id.startsWith("PYSEC-")) attribution = ` and the [PyPI Advisory Database](https://github.com/pypa/advisory-database) ([CC-BY 4.0](https://github.com/pypa/advisory-database/blob/main/LICENSE))`;
+		else if (vulnerability.id.startsWith("RUSTSEC-")) attribution = ` and the [Rust Advisory Database](https://github.com/RustSec/advisory-db) ([CC0 1.0](https://github.com/rustsec/advisory-db/blob/main/LICENSE.txt))`;
+		content += `\n\nThis data is provided by [OSV](https://osv.dev/vulnerability/${vulnerability.id})${attribution}.\n`;
+		content += `</details>`;
+		return [sanitizeMarkdown(content)];
+	}
+	extractSeverityDetails(vulnerability, affected) {
+		let severityLevel = "UNKNOWN";
+		let score = "Unknown";
+		const cvssVector = vulnerability.severity?.find((e) => e.type === "CVSS_V4")?.score ?? vulnerability.severity?.find((e) => e.type === "CVSS_V3")?.score ?? affected.database_specific?.cvss;
+		if (cvssVector) {
+			const [baseScore, severity] = Vulnerabilities.evaluateCvssVector(cvssVector);
+			severityLevel = severity ? severity.toUpperCase() : "UNKNOWN";
+			score = baseScore ? `${baseScore} / 10 (${titleCase(severityLevel)})` : "Unknown";
+		} else if (vulnerability.id.startsWith("GHSA-") && vulnerability.database_specific?.severity) severityLevel = vulnerability.database_specific.severity.toUpperCase();
+		return {
+			cvssVector,
+			score,
+			severityLevel
+		};
+	}
+};
+//#endregion
+export { Vulnerabilities };
+
+//# sourceMappingURL=vulnerabilities.js.map

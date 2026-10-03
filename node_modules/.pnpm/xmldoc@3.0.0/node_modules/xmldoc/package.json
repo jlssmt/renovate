@@ -1,0 +1,67 @@
+{
+  "name": "xmldoc",
+  "description": "A lightweight XML Document class for JavaScript.",
+  "author": {
+    "name": "Nick Farina",
+    "email": "nfarina@gmail.com",
+    "url": "http://nfarina.com"
+  },
+  "version": "3.0.0",
+  "type": "module",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "npm run build && node --test",
+    "coverage": "npm run build && node --test --experimental-test-coverage",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p ./tsconfig.build.json",
+    "prepublishOnly": "npm run build",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nfarina/xmldoc.git"
+  },
+  "contributors": [
+    {
+      "name": "Nick Farina",
+      "email": "nfarina@gmail.com"
+    },
+    {
+      "name": "Caleb Meredith",
+      "email": "calebmeredith8@gmail.com"
+    }
+  ],
+  "dependencies": {
+    "sax": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/sax": "1.2.7",
+    "oxfmt": "^0.53.0",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "xml",
+    "sax",
+    "parser",
+    "xpath",
+    "document"
+  ]
+}

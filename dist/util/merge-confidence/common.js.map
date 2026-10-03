@@ -1,0 +1,1 @@
+{"version":3,"file":"common.js","names":[],"sources":["../../../lib/util/merge-confidence/common.ts"],"sourcesContent":["export const MERGE_CONFIDENCE = [\n  'low',\n  'neutral',\n  'high',\n  'very high',\n] as const;\n"],"mappings":";AAAA,MAAa,mBAAmB;CAC9B;CACA;CACA;CACA;AACF"}

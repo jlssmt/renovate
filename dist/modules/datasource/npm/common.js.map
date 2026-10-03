@@ -1,0 +1,1 @@
+{"version":3,"file":"common.js","names":[],"sources":["../../../../lib/modules/datasource/npm/common.ts"],"sourcesContent":["export const defaultRegistryUrl = 'https://registry.npmjs.org';\n"],"mappings":";AAAA,MAAa,qBAAqB"}

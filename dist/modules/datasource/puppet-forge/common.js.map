@@ -1,0 +1,1 @@
+{"version":3,"file":"common.js","names":[],"sources":["../../../../lib/modules/datasource/puppet-forge/common.ts"],"sourcesContent":["export const PUPPET_FORGE = 'https://forgeapi.puppet.com';\n"],"mappings":";AAAA,MAAa,eAAe"}

@@ -1,0 +1,1 @@
+{"version":3,"file":"common.js","names":[],"sources":["../../../../lib/modules/datasource/endoflife-date/common.ts"],"sourcesContent":["export const registryUrl = 'https://endoflife.date/api';\nexport const datasource = 'endoflife-date';\n"],"mappings":";AAAA,MAAa,cAAc;AAC3B,MAAa,aAAa"}

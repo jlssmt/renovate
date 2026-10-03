@@ -1,0 +1,1 @@
+{"version":3,"file":"common.js","names":[],"sources":["../../../../lib/modules/datasource/conda/common.ts"],"sourcesContent":["export const defaultRegistryUrl = 'https://api.anaconda.org/package/';\nexport const datasource = 'conda';\n"],"mappings":";AAAA,MAAa,qBAAqB;AAClC,MAAa,aAAa"}

@@ -1,0 +1,1 @@
+{"version":3,"file":"common.js","names":[],"sources":["../../../../lib/modules/manager/conan/common.ts"],"sourcesContent":["export function isComment(line: string): boolean {\n  return line.trim().startsWith('#');\n}\n"],"mappings":";AAAA,SAAgB,UAAU,MAAuB;CAC/C,OAAO,KAAK,KAAK,CAAC,CAAC,WAAW,GAAG;AACnC"}

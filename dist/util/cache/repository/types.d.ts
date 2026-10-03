@@ -1,0 +1,182 @@
+import { RepoInitConfig } from "../../../workers/repository/init/types.js";
+import { PrBlockedBy } from "../../../workers/types.js";
+import { PackageFile } from "../../../modules/manager/types.js";
+import { RepositoryCacheConfig, RepositoryCacheType, UpdateType } from "../../../config/types.js";
+//#region lib/util/cache/repository/types.d.ts
+export interface BaseBranchCache {
+  revision?: number;
+  sha: string;
+  configHash: string;
+  extractionFingerprints: Record<string, string | undefined>;
+  packageFiles: Record<string, PackageFile[]>;
+}
+export interface BranchUpgradeCache {
+  currentDigest?: string;
+  currentValue?: string;
+  datasource?: string;
+  depName?: string;
+  depType?: string;
+  displayPending?: unknown;
+  manager?: string;
+  fixedVersion?: string;
+  currentVersion?: string;
+  packageName?: string;
+  newDigest?: string | null;
+  newValue?: string;
+  newVersion?: string;
+  sourceUrl?: string;
+  packageFile?: string;
+  remediationNotPossible?: unknown;
+  updateType?: UpdateType;
+  isVulnerabilityAlert?: boolean;
+}
+export interface OnboardingBranchCache {
+  defaultBranchSha: string;
+  onboardingBranchSha: string;
+  isConflicted: boolean;
+  isModified: boolean;
+  configFileName?: string;
+  configFileParsed?: string;
+}
+export interface ReconfigureBranchCache {
+  reconfigureBranchSha: string;
+  isConfigValid: boolean;
+  extractionSucceeded?: boolean;
+  /** @deprecated Written by earlier versions, migrated to `extractionSucceeded` when the cache is read. */
+  extractResult?: unknown;
+}
+export interface PrCache {
+  /**
+   * Fingerprint of the PR body
+   */
+  fingerprint?: string;
+  bodyFingerprint: string;
+  /**
+   * last PR modified ISO timestamp
+   */
+  lastEdited: string;
+}
+export interface BranchCache {
+  /**
+   * Whether this branch has automerge enabled
+   */
+  automerge?: boolean;
+  /**
+   * Name of base branch
+   */
+  baseBranch?: string;
+  /**
+   * The base branch's most recent commit SHA
+   */
+  baseBranchSha?: string | null;
+  /**
+   * Hash of the manager fingerprints and the filtered update branch config
+   */
+  branchFingerprint?: string;
+  commitFingerprint?: string;
+  /**
+   * The branch's most recent commit timestamp (ISO string)
+   * Used for commitHourlyLimit tracking
+   */
+  commitTimestamp?: string;
+  /**
+   * Branch name
+   */
+  branchName: string;
+  /**
+   * Whether the update branch is behind base branch
+   */
+  isBehindBase?: boolean;
+  /**
+   * Whether the update branch is in conflict with base branch
+   */
+  isConflicted?: boolean;
+  /**
+   * Whether a person not listed in gitIgnoredAuthors updated the branch.
+   */
+  isModified?: boolean;
+  /**
+   *
+   */
+  pristine?: boolean;
+  /**
+   * Pr number of PR created from this branch
+   */
+  prNo: number | null;
+  /**
+   * The branch's most recent commit SHA
+   */
+  sha?: string | null;
+  /**
+   * Details on the dependency upgrades that have been applied in this branch
+   */
+  upgrades: BranchUpgradeCache[];
+  /**
+   * Object that has PR info
+   */
+  prCache?: PrCache | null;
+  /**
+   * Dependency dashboard information
+   */
+  prBlockedBy?: PrBlockedBy;
+  prTitle?: string;
+  result?: string;
+}
+/**
+ * Repository cache shared by the platforms which speak the Gitea API.
+ */
+export interface GiteaLikePlatformCache {
+  /**
+   * To avoid circular dependency problem, we use `unknown` type here.
+   */
+  pullRequestsCache?: unknown;
+  orgs?: Record<string, boolean>;
+}
+export interface RepoCacheData {
+  configFileName?: string;
+  httpCache?: Record<string, unknown>;
+  httpCacheHead?: Record<string, unknown>;
+  semanticCommits?: 'enabled' | 'disabled';
+  branches?: BranchCache[];
+  init?: RepoInitConfig;
+  scan?: Record<string, BaseBranchCache>;
+  lastPlatformAutomergeFailure?: string;
+  platform?: {
+    forgejo?: GiteaLikePlatformCache;
+    gitea?: GiteaLikePlatformCache;
+    github?: {
+      /**
+       * To avoid circular dependency problem, we use `unknown` type here.
+       */
+      pullRequestsCache?: unknown;
+      graphqlPageCache?: unknown;
+      issuesCache?: Record<number, unknown>;
+    };
+    bitbucket?: {
+      pullRequestsCache?: unknown;
+    };
+    gitlab?: {
+      pullRequestsCache?: unknown;
+    };
+    'bitbucket-server'?: {
+      pullRequestsCache?: unknown;
+    };
+  };
+  prComments?: Record<number, Record<string, string>>;
+  onboardingBranchCache?: OnboardingBranchCache;
+  reconfigureBranchCache?: ReconfigureBranchCache;
+}
+export interface RepoCache {
+  load(): Promise<void>;
+  save(): Promise<void>;
+  getData(): RepoCacheData;
+  isModified(): boolean | undefined;
+}
+export interface RepoCacheConfig {
+  repository?: string;
+  repositoryCache?: RepositoryCacheConfig;
+  repositoryCacheType?: RepositoryCacheType;
+  repoFingerprint: string;
+}
+//#endregion
+//# sourceMappingURL=types.d.ts.map

@@ -1,0 +1,53 @@
+import { GraphqlOptions, HttpMethod, HttpOptions, HttpResponse } from "./types.js";
+import { HttpBase, InternalHttpOptions, InternalJsonUnsafeOptions } from "./http.js";
+import { GotLegacyError } from "./legacy.js";
+//#region lib/util/http/github.d.ts
+export declare function setBaseUrl(url: string): void;
+export interface GithubBaseHttpOptions extends HttpOptions {
+  repository?: string;
+}
+export interface GithubHttpOptions extends GithubBaseHttpOptions {
+  paginate?: boolean | string;
+  paginationField?: string;
+  pageLimit?: number;
+}
+export type GithubGraphqlResponse<T = unknown> = {
+  data: T;
+  errors?: never;
+} | {
+  data?: never;
+  errors: {
+    type?: string;
+    code?: string;
+    message: string;
+  }[];
+};
+interface GraphqlPageCacheItem {
+  pageLastResizedAt: string;
+  pageSize: number;
+}
+export type GraphqlPageCache = Record<string, GraphqlPageCacheItem>;
+export declare class GithubHttp extends HttpBase<GithubHttpOptions> {
+  protected get baseUrl(): string | undefined;
+  constructor(hostType?: string, options?: HttpOptions);
+  protected extraOptions(): readonly string[];
+  protected processOptions(url: URL, opts: InternalHttpOptions & GithubBaseHttpOptions): void;
+  protected handleError(url: string | URL, opts: HttpOptions, err: GotLegacyError): never;
+  protected requestJsonUnsafe<T>(method: HttpMethod, options: InternalJsonUnsafeOptions<GithubHttpOptions>): Promise<HttpResponse<T>>;
+  requestGraphql<T = unknown>(query: string, options?: GraphqlOptions): Promise<GithubGraphqlResponse<T> | null>;
+  queryRepoField<T = Record<string, unknown>>(query: string, fieldName: string, options?: GraphqlOptions): Promise<T[]>;
+  /**
+   * Get the raw text file from a URL.
+   * Only use this method to fetch text files.
+   *
+   * @param url Full API URL, contents path or path inside the repository to the file
+   * @param options
+   *
+   * @example url = 'https://api.github.com/repos/renovatebot/renovate/contents/package.json'
+   * @example url = 'renovatebot/renovate/contents/package.json'
+   * @example url = 'package.json' & options.repository = 'renovatebot/renovate'
+   */
+  getRawTextFile(url: string, options?: InternalHttpOptions & GithubBaseHttpOptions): Promise<HttpResponse>;
+}
+//#endregion
+//# sourceMappingURL=github.d.ts.map

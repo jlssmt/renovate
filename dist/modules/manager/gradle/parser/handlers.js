@@ -1,0 +1,372 @@
+import { regEx } from "../../../../util/regex.js";
+import { logger } from "../../../../logger/index.js";
+import { parseUrl } from "../../../../util/url.js";
+import { getSiblingFileName } from "../../../../util/fs/index.js";
+import { GRADLE_PLUGINS, GRADLE_TEST_SUITES, findVariable, interpolateString, loadFromTokenMap } from "./common.js";
+import { isDependencyString, parseDependencyString } from "../utils.js";
+import upath from "upath";
+//#region lib/modules/manager/gradle/parser/handlers.ts
+let parseGradle;
+function setParseGradleFunc(func) {
+	parseGradle = func;
+}
+function handleAssignment(ctx) {
+	const key = loadFromTokenMap(ctx, "keyToken")[0].value;
+	const valTokens = loadFromTokenMap(ctx, "valToken");
+	if (valTokens.length > 1) {
+		ctx.tokenMap.templateStringTokens = valTokens;
+		handleDepString(ctx);
+		delete ctx.tokenMap.templateStringTokens;
+	} else if (valTokens[0].type === "symbol") {
+		const varData = findVariable(valTokens[0].value, ctx);
+		if (varData) ctx.globalVars[key] = { ...varData };
+	} else {
+		const dep = parseDependencyString(valTokens[0].value);
+		if (dep) {
+			dep.sharedVariableName = key;
+			dep.managerData = {
+				fileReplacePosition: valTokens[0].offset + dep.depName.length + 1,
+				packageFile: ctx.packageFile
+			};
+			ctx.deps.push(dep);
+		}
+		ctx.globalVars[key] = {
+			key,
+			value: valTokens[0].value,
+			fileReplacePosition: valTokens[0].offset,
+			packageFile: ctx.packageFile
+		};
+	}
+	return ctx;
+}
+function handleDepString(ctx) {
+	const stringTokens = loadFromTokenMap(ctx, "templateStringTokens");
+	const templateString = interpolateString(stringTokens, ctx);
+	if (!templateString) return ctx;
+	const dep = parseDependencyString(templateString);
+	if (!dep) return ctx;
+	let packageFile;
+	let fileReplacePosition;
+	for (const token of stringTokens) if (token.type === "symbol") {
+		const varData = findVariable(token.value, ctx);
+		// v8 ignore else -- needs a script where this lookup resolves to nothing
+		if (varData) {
+			packageFile = varData.packageFile;
+			fileReplacePosition = varData.fileReplacePosition;
+			if (varData.value === dep.currentValue) {
+				dep.managerData = {
+					fileReplacePosition,
+					packageFile
+				};
+				dep.sharedVariableName = varData.key;
+			}
+		}
+	}
+	if (!dep.managerData) {
+		const lastToken = stringTokens.at(-1);
+		if (lastToken?.type === "string-value" && dep.currentValue && lastToken.value.includes(dep.currentValue)) {
+			packageFile = ctx.packageFile;
+			if (stringTokens.length === 1) fileReplacePosition = lastToken.offset + dep.depName.length + 1;
+			else fileReplacePosition = lastToken.offset + lastToken.value.lastIndexOf(dep.currentValue);
+			delete dep.sharedVariableName;
+		} else dep.skipReason = "contains-variable";
+		dep.managerData = {
+			fileReplacePosition,
+			packageFile
+		};
+	}
+	ctx.deps.push(dep);
+	return ctx;
+}
+function handleKotlinShortNotationDep(ctx) {
+	const moduleNameTokens = loadFromTokenMap(ctx, "artifactId");
+	const versionTokens = loadFromTokenMap(ctx, "version");
+	const moduleName = interpolateString(moduleNameTokens, ctx);
+	const versionValue = interpolateString(versionTokens, ctx);
+	if (!moduleName || !versionValue) return ctx;
+	const groupIdArtifactId = `org.jetbrains.kotlin:kotlin-${moduleName}`;
+	const dep = parseDependencyString(`${groupIdArtifactId}:${versionValue}`);
+	if (!dep) return ctx;
+	dep.depName = moduleName;
+	dep.packageName = groupIdArtifactId;
+	dep.managerData = {
+		fileReplacePosition: versionTokens[0].offset,
+		packageFile: ctx.packageFile
+	};
+	if (versionTokens.length > 1) dep.skipReason = "unspecified-version";
+	else if (versionTokens[0].type === "symbol") {
+		const varData = findVariable(versionTokens[0].value, ctx);
+		// v8 ignore else -- needs a script where this lookup resolves to nothing
+		if (varData) {
+			dep.sharedVariableName = varData.key;
+			dep.currentValue = varData.value;
+			dep.managerData = {
+				fileReplacePosition: varData.fileReplacePosition,
+				packageFile: varData.packageFile
+			};
+		}
+	}
+	ctx.deps.push(dep);
+	return ctx;
+}
+function handleLongFormDep(ctx) {
+	const groupIdTokens = loadFromTokenMap(ctx, "groupId");
+	const artifactIdTokens = loadFromTokenMap(ctx, "artifactId");
+	const versionTokens = loadFromTokenMap(ctx, "version");
+	const groupId = interpolateString(groupIdTokens, ctx);
+	const artifactId = interpolateString(artifactIdTokens, ctx);
+	const version = interpolateString(versionTokens, ctx);
+	if (!groupId || !artifactId || !version) return ctx;
+	if (isDependencyString(groupId) && isDependencyString(artifactId) && isDependencyString(version)) {
+		ctx.tokenMap.templateStringTokens = groupIdTokens;
+		handleDepString(ctx);
+		ctx.tokenMap.templateStringTokens = artifactIdTokens;
+		handleDepString(ctx);
+		ctx.tokenMap.templateStringTokens = versionTokens;
+		handleDepString(ctx);
+		return ctx;
+	}
+	const dep = parseDependencyString([
+		groupId,
+		artifactId,
+		version
+	].join(":"));
+	if (!dep) return ctx;
+	const methodName = ctx.tokenMap.methodName ?? null;
+	if (versionTokens.length > 1) dep.skipReason = "unspecified-version";
+	else if (versionTokens[0].type === "symbol") {
+		const varData = findVariable(versionTokens[0].value, ctx);
+		// v8 ignore else -- needs a script where this lookup resolves to nothing
+		if (varData) {
+			dep.sharedVariableName = varData.key;
+			dep.managerData = {
+				fileReplacePosition: varData.fileReplacePosition,
+				packageFile: varData.packageFile
+			};
+		}
+	} else {
+		if (methodName?.[0]?.value === "dependencySet") dep.sharedVariableName = `${groupId}:${version}`;
+		dep.managerData = {
+			fileReplacePosition: versionTokens[0].offset,
+			packageFile: ctx.packageFile
+		};
+	}
+	ctx.deps.push(dep);
+	return ctx;
+}
+function handlePlugin(ctx) {
+	const methodName = loadFromTokenMap(ctx, "methodName")[0];
+	const pluginNameTokens = loadFromTokenMap(ctx, "pluginName");
+	const pluginVersion = loadFromTokenMap(ctx, "version");
+	const plugin = interpolateString(pluginNameTokens, ctx);
+	if (!plugin) return ctx;
+	const depName = methodName.value === "kotlin" ? `org.jetbrains.kotlin.${plugin}` : plugin;
+	const dep = {
+		depType: "plugin",
+		depName,
+		packageName: `${depName}:${depName}.gradle.plugin`,
+		commitMessageTopic: `plugin ${depName}`,
+		currentValue: pluginVersion[0].value,
+		managerData: {
+			fileReplacePosition: pluginVersion[0].offset,
+			packageFile: ctx.packageFile
+		}
+	};
+	if (pluginVersion.length > 1) dep.skipReason = "unspecified-version";
+	else if (pluginVersion[0].type === "symbol") {
+		const varData = findVariable(pluginVersion[0].value, ctx);
+		if (varData) {
+			dep.sharedVariableName = varData.key;
+			dep.currentValue = varData.value;
+			dep.managerData = {
+				fileReplacePosition: varData.fileReplacePosition,
+				packageFile: varData.packageFile
+			};
+		} else dep.skipReason = "unspecified-version";
+	}
+	ctx.deps.push(dep);
+	return ctx;
+}
+function isValidContentDescriptorRegex(fieldName, pattern) {
+	try {
+		regEx(pattern);
+	} catch {
+		logger.debug(`Skipping content descriptor with unsupported regExp pattern for ${fieldName}: ${pattern}`);
+		return false;
+	}
+	return true;
+}
+function handleRegistryContent(ctx) {
+	const methodName = loadFromTokenMap(ctx, "methodName")[0].value;
+	let groupId = loadFromTokenMap(ctx, "groupId")[0].value;
+	let matcher = "simple";
+	if (methodName.includes("Regex")) {
+		matcher = "regex";
+		groupId = `^${groupId}$`.replaceAll("\\\\", "\\");
+		if (!isValidContentDescriptorRegex("group", groupId)) return ctx;
+	} else if (methodName.includes("AndSubgroups")) matcher = "subgroup";
+	const spec = {
+		mode: methodName.startsWith("include") ? "include" : "exclude",
+		matcher,
+		groupId
+	};
+	if (methodName.includes("Module") || methodName.includes("Version")) {
+		spec.artifactId = loadFromTokenMap(ctx, "artifactId")[0].value;
+		if (matcher === "regex") {
+			spec.artifactId = `^${spec.artifactId}$`.replaceAll("\\\\", "\\");
+			if (!isValidContentDescriptorRegex("module", spec.artifactId)) return ctx;
+		}
+	}
+	if (methodName.includes("Version")) {
+		spec.version = loadFromTokenMap(ctx, "version")[0].value;
+		if (matcher === "regex") {
+			spec.version = `^${spec.version}$`.replaceAll("\\\\", "\\");
+			if (!isValidContentDescriptorRegex("version", spec.version)) return ctx;
+		}
+	}
+	ctx.tmpRegistryContent.push(spec);
+	return ctx;
+}
+function isPluginRegistry(ctx) {
+	if (ctx.tokenMap.registryScope) return loadFromTokenMap(ctx, "registryScope")[0].value === "pluginManagement";
+	return false;
+}
+function isExclusiveRegistry(ctx) {
+	if (ctx.tokenMap.registryType) return loadFromTokenMap(ctx, "registryType")[0].value === "exclusiveContent";
+	return false;
+}
+function handleRegistryUrl(ctx) {
+	let localVariables = ctx.globalVars;
+	if (!ctx.tokenMap.registryUrl) return ctx;
+	if (ctx.tokenMap.name) {
+		const nameTokens = loadFromTokenMap(ctx, "name");
+		const nameValue = interpolateString(nameTokens, ctx, localVariables);
+		// v8 ignore else -- needs a script where this lookup resolves to nothing
+		if (nameValue) localVariables = {
+			...localVariables,
+			name: {
+				key: "name",
+				value: nameValue
+			}
+		};
+	}
+	let registryUrl = interpolateString(loadFromTokenMap(ctx, "registryUrl"), ctx, localVariables);
+	// v8 ignore else -- needs a script where this lookup resolves to nothing
+	if (registryUrl) {
+		registryUrl = registryUrl.replace(regEx(/\\/g), "");
+		const url = parseUrl(registryUrl);
+		// v8 ignore else -- needs a script where this lookup resolves to nothing
+		if (url?.host && url.protocol) {
+			const registryType = isExclusiveRegistry(ctx) ? "exclusive" : "regular";
+			if (registryType === "exclusive" && !ctx.tmpRegistryContent.length) {
+				logger.debug(`Skipping exclusive registry ${registryUrl} with unsupported content descriptors`);
+				return ctx;
+			}
+			ctx.registryUrls.push({
+				registryUrl,
+				registryType,
+				scope: isPluginRegistry(ctx) ? "plugin" : "dep",
+				content: ctx.tmpRegistryContent
+			});
+		}
+	}
+	return ctx;
+}
+function handleCatalogLongFormDep(ctx) {
+	const groupIdTokens = loadFromTokenMap(ctx, "groupId");
+	const artifactIdTokens = loadFromTokenMap(ctx, "artifactId");
+	const groupId = interpolateString(groupIdTokens, ctx);
+	const artifactId = interpolateString(artifactIdTokens, ctx);
+	if (!groupId || !artifactId) return ctx;
+	const aliasToken = loadFromTokenMap(ctx, "alias")[0];
+	const key = `libs.${aliasToken.value.replace(regEx(/[-_]/g), ".")}`;
+	ctx.globalVars[key] = {
+		key,
+		value: `${groupId}:${artifactId}`,
+		fileReplacePosition: aliasToken.offset,
+		packageFile: ctx.packageFile
+	};
+	if (ctx.tokenMap.version) {
+		// v8 ignore else -- needs a script where this lookup resolves to nothing
+		if (interpolateString(loadFromTokenMap(ctx, "version"), ctx)) handleLongFormDep(ctx);
+	}
+	return ctx;
+}
+function handleCatalogDepString(ctx) {
+	const templateStringTokens = loadFromTokenMap(ctx, "templateStringTokens");
+	const templateString = interpolateString(templateStringTokens, ctx);
+	if (!templateString) return ctx;
+	const aliasToken = loadFromTokenMap(ctx, "alias")[0];
+	const key = `libs.${aliasToken.value.replace(regEx(/[-_]/g), ".")}`;
+	ctx.globalVars[key] = {
+		key,
+		value: templateString,
+		fileReplacePosition: aliasToken.offset,
+		packageFile: ctx.packageFile
+	};
+	return handleDepString(ctx);
+}
+function handleApplyFrom(ctx) {
+	let scriptFile = interpolateString(loadFromTokenMap(ctx, "scriptFile"), ctx);
+	if (!scriptFile) return ctx;
+	if (ctx.tokenMap.parentPath) {
+		const parentPath = interpolateString(loadFromTokenMap(ctx, "parentPath"), ctx);
+		// v8 ignore else -- needs a script where this lookup resolves to nothing
+		if (parentPath && scriptFile) scriptFile = upath.join(parentPath, scriptFile);
+	}
+	if (ctx.recursionDepth > 2) {
+		logger.debug(`Max recursion depth reached in script file: ${scriptFile}`);
+		return ctx;
+	}
+	if (!regEx(/\.gradle(?:\.kts)?$/).test(scriptFile)) {
+		logger.debug({ scriptFile }, `Only Gradle files can be included`);
+		return ctx;
+	}
+	const scriptFilePath = getSiblingFileName(ctx.packageFile, scriptFile);
+	if (!ctx.fileContents[scriptFilePath]) {
+		logger.debug(`Failed to process included Gradle file ${scriptFilePath}`);
+		return ctx;
+	}
+	const matchResult = parseGradle(ctx.fileContents[scriptFilePath], ctx.globalVars, scriptFilePath, ctx.fileContents, ctx.recursionDepth + 1);
+	ctx.deps.push(...matchResult.deps);
+	ctx.globalVars = {
+		...ctx.globalVars,
+		...matchResult.vars
+	};
+	ctx.registryUrls.push(...matchResult.urls);
+	return ctx;
+}
+function handleImplicitDep(ctx) {
+	const implicitDepName = loadFromTokenMap(ctx, "implicitDepName")[0].value;
+	const versionTokens = loadFromTokenMap(ctx, "version");
+	const versionValue = interpolateString(versionTokens, ctx);
+	if (!versionValue) return ctx;
+	const groupIdArtifactId = implicitDepName in GRADLE_PLUGINS ? GRADLE_PLUGINS[implicitDepName][1] : GRADLE_TEST_SUITES[implicitDepName];
+	const dep = parseDependencyString(`${groupIdArtifactId}:${versionValue}`);
+	if (!dep) return ctx;
+	dep.depName = implicitDepName;
+	dep.packageName = groupIdArtifactId;
+	dep.managerData = {
+		fileReplacePosition: versionTokens[0].offset,
+		packageFile: ctx.packageFile
+	};
+	if (versionTokens.length > 1) dep.skipReason = "unspecified-version";
+	else if (versionTokens[0].type === "symbol") {
+		const varData = findVariable(versionTokens[0].value, ctx);
+		// v8 ignore else -- needs a script where this lookup resolves to nothing
+		if (varData) {
+			dep.sharedVariableName = varData.key;
+			dep.currentValue = varData.value;
+			dep.managerData = {
+				fileReplacePosition: varData.fileReplacePosition,
+				packageFile: varData.packageFile
+			};
+		}
+	}
+	ctx.deps.push(dep);
+	return ctx;
+}
+//#endregion
+export { handleApplyFrom, handleAssignment, handleCatalogDepString, handleCatalogLongFormDep, handleDepString, handleImplicitDep, handleKotlinShortNotationDep, handleLongFormDep, handlePlugin, handleRegistryContent, handleRegistryUrl, setParseGradleFunc };
+
+//# sourceMappingURL=handlers.js.map

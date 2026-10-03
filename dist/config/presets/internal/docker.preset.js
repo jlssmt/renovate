@@ -1,0 +1,44 @@
+//#region lib/config/presets/internal/docker.preset.ts
+const presets = {
+	disable: {
+		circleci: { enabled: false },
+		description: "Disable Docker updates.",
+		"docker-compose": { enabled: false },
+		dockerfile: { enabled: false }
+	},
+	disableMajor: {
+		description: "Disable Docker `major` updates.",
+		packageRules: [{
+			enabled: false,
+			matchDatasources: ["docker"],
+			matchUpdateTypes: ["major"]
+		}]
+	},
+	enableMajor: {
+		description: "Enable Docker `major` updates.",
+		packageRules: [{
+			enabled: true,
+			matchDatasources: ["docker"],
+			matchUpdateTypes: ["major"]
+		}]
+	},
+	pinDigests: {
+		description: "Pin Docker digests.",
+		packageRules: [{
+			matchDatasources: ["docker"],
+			pinDigests: true
+		}, {
+			matchManagers: [
+				"argocd",
+				"devcontainer",
+				"helmv3",
+				"pyenv"
+			],
+			pinDigests: false
+		}]
+	}
+};
+//#endregion
+export { presets };
+
+//# sourceMappingURL=docker.preset.js.map

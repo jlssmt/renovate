@@ -1,0 +1,1 @@
+{"version":3,"file":"common.js","names":[],"sources":["../../../../lib/modules/datasource/devbox/common.ts"],"sourcesContent":["export const defaultRegistryUrl = 'https://search.devbox.sh/v2/';\n\nexport const datasource = 'devbox';\n"],"mappings":";AAAA,MAAa,qBAAqB;AAElC,MAAa,aAAa"}

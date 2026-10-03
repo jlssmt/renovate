@@ -1,0 +1,426 @@
+import { regEx } from "../../../util/regex.js";
+import { parseUrl } from "../../../util/url.js";
+import { detectPlatform } from "../../../util/common.js";
+import { getHttpUrl } from "../../../util/git/url.js";
+import { GitTagsDatasource } from "../../datasource/git-tags/index.js";
+import { GithubTagsDatasource } from "../../datasource/github-tags/index.js";
+import { GitlabTagsDatasource } from "../../datasource/gitlab-tags/index.js";
+//#region lib/modules/manager/swift/extract.ts
+const regExps = {
+	wildcard: regEx(/^.*?/),
+	space: regEx(/(?:\s+|\/\/[^\n]*|\/\*.*\*\/)+/s),
+	depsKeyword: regEx(/dependencies/),
+	colon: regEx(/:/),
+	beginSection: regEx(/\[/),
+	endSection: regEx(/],?/),
+	package: regEx(/\s*.\s*package\s*\(\s*/),
+	urlKey: regEx(/url/),
+	stringLiteral: regEx(/"[^"]+"/),
+	comma: regEx(/,/),
+	from: regEx(/from/),
+	rangeOp: regEx(/\.\.[.<]/),
+	exactVersion: regEx(/\.\s*exact\s*\(\s*/),
+	exactVersionLabel: regEx(/\s*exact:/),
+	traitsLabel: regEx(/\s*traits\s*:/),
+	traitsConsumeToNextPackage: regEx(/.*\.\s*package\s*\(\s*/)
+};
+const WILDCARD = "wildcard";
+const SPACE = "space";
+const DEPS = "depsKeyword";
+const COLON = "colon";
+const BEGIN_SECTION = "beginSection";
+const END_SECTION = "endSection";
+const PACKAGE = "package";
+const URL_KEY = "urlKey";
+const STRING_LITERAL = "stringLiteral";
+const COMMA = "comma";
+const FROM = "from";
+const RANGE_OP = "rangeOp";
+const EXACT_VERSION = "exactVersion";
+const EXACT_VERSION_LABEL = "exactVersionLabel";
+const TRAITS_LABEL = "traitsLabel";
+const TRAITS_CONSUME_TO_NEXT_PACKAGE = "traitsConsumeToNextPackage";
+const searchLabels = {
+	wildcard: WILDCARD,
+	space: SPACE,
+	depsKeyword: DEPS,
+	colon: COLON,
+	beginSection: BEGIN_SECTION,
+	endSection: END_SECTION,
+	package: PACKAGE,
+	urlKey: URL_KEY,
+	stringLiteral: STRING_LITERAL,
+	comma: COMMA,
+	from: FROM,
+	rangeOp: RANGE_OP,
+	exactVersion: EXACT_VERSION,
+	exactVersionLabel: EXACT_VERSION_LABEL,
+	traitsLabel: TRAITS_LABEL,
+	traitsConsumeToNextPackage: TRAITS_CONSUME_TO_NEXT_PACKAGE
+};
+function searchKeysForState(state) {
+	switch (state) {
+		case "dependencies": return [
+			SPACE,
+			COLON,
+			WILDCARD
+		];
+		case "dependencies:": return [
+			SPACE,
+			BEGIN_SECTION,
+			WILDCARD
+		];
+		case "dependencies: [": return [
+			SPACE,
+			PACKAGE,
+			COMMA,
+			TRAITS_LABEL,
+			END_SECTION
+		];
+		case ".package(": return [
+			SPACE,
+			URL_KEY,
+			PACKAGE,
+			END_SECTION
+		];
+		case ".package(url": return [
+			SPACE,
+			COLON,
+			PACKAGE,
+			END_SECTION
+		];
+		case ".package(url:": return [
+			SPACE,
+			STRING_LITERAL,
+			PACKAGE,
+			END_SECTION
+		];
+		case ".package(url: [depName]": return [
+			SPACE,
+			COMMA,
+			PACKAGE,
+			END_SECTION
+		];
+		case ".package(url: [depName],": return [
+			SPACE,
+			FROM,
+			STRING_LITERAL,
+			RANGE_OP,
+			EXACT_VERSION,
+			EXACT_VERSION_LABEL,
+			PACKAGE,
+			END_SECTION
+		];
+		case ".package(url: [depName], .exact(": return [
+			SPACE,
+			STRING_LITERAL,
+			PACKAGE,
+			COMMA,
+			TRAITS_LABEL,
+			END_SECTION
+		];
+		case ".package(url: [depName], exact:": return [
+			SPACE,
+			STRING_LITERAL,
+			PACKAGE,
+			COMMA,
+			TRAITS_LABEL,
+			END_SECTION
+		];
+		case ".package(url: [depName], from": return [
+			SPACE,
+			COLON,
+			PACKAGE,
+			COMMA,
+			TRAITS_LABEL,
+			END_SECTION
+		];
+		case ".package(url: [depName], from:": return [
+			SPACE,
+			STRING_LITERAL,
+			PACKAGE,
+			COMMA,
+			TRAITS_LABEL,
+			END_SECTION
+		];
+		case ".package(url: [depName], [value]": return [
+			SPACE,
+			RANGE_OP,
+			PACKAGE,
+			COMMA,
+			TRAITS_LABEL,
+			END_SECTION
+		];
+		case ".package(url: [depName], [rangeFrom][rangeOp]": return [
+			SPACE,
+			STRING_LITERAL,
+			PACKAGE,
+			COMMA,
+			TRAITS_LABEL,
+			END_SECTION
+		];
+		case "traits:": return [SPACE, TRAITS_CONSUME_TO_NEXT_PACKAGE];
+		default: return [DEPS];
+	}
+}
+function getMatch(str, state) {
+	const keys = searchKeysForState(state);
+	let result = null;
+	for (const key of keys) {
+		const regex = regExps[key];
+		const label = searchLabels[key];
+		const match = regex.exec(str);
+		if (match) {
+			const idx = match.index;
+			const substr = match[0];
+			const len = substr.length;
+			if (idx === 0) return {
+				idx,
+				len,
+				label,
+				substr
+			};
+			if (!result || idx < result.idx) result = {
+				idx,
+				len,
+				label,
+				substr
+			};
+		}
+	}
+	return result;
+}
+function parseDependencyUrl(url) {
+	// istanbul ignore if
+	if (!url) return null;
+	let normalizedUrl;
+	try {
+		normalizedUrl = getHttpUrl(url);
+	} catch {
+		return null;
+	}
+	const parsedUrl = parseUrl(normalizedUrl);
+	// v8 ignore if -- getHttpUrl always returns a parseable URL
+	if (!parsedUrl) return null;
+	const { host, pathname, protocol } = parsedUrl;
+	const platform = detectPlatform(normalizedUrl);
+	if (platform === "github" || platform === "gitlab") {
+		const depName = pathname.replace(regEx(/^\//), "").replace(regEx(/\.git$/), "").replace(regEx(/\/$/), "");
+		const datasource = platform === "github" ? GithubTagsDatasource.id : GitlabTagsDatasource.id;
+		if (!(host === "github.com") && !(host === "gitlab.com")) return {
+			depName,
+			datasource,
+			registryUrls: [`${protocol}//${host}`]
+		};
+		return {
+			depName,
+			datasource
+		};
+	}
+	return {
+		depName: url,
+		datasource: GitTagsDatasource.id
+	};
+}
+function extractPackageFile(content) {
+	if (!content) return null;
+	const deps = [];
+	const result = { deps };
+	let restStr = content;
+	let state = null;
+	let match = getMatch(restStr, state);
+	let packageName = null;
+	let currentValue = null;
+	function yieldDep() {
+		// istanbul ignore if
+		if (!packageName) return;
+		const parsedUrl = parseDependencyUrl(packageName);
+		if (parsedUrl && currentValue) {
+			const { depName, datasource, registryUrls } = parsedUrl;
+			const dep = {
+				datasource,
+				depName,
+				currentValue,
+				...registryUrls?.length && { registryUrls }
+			};
+			deps.push(dep);
+		}
+		packageName = null;
+		currentValue = null;
+	}
+	while (match) {
+		const { idx, len, label, substr } = match;
+		switch (state) {
+			case null:
+				if (deps.length) break;
+				// v8 ignore else -- this state is only re-entered at a deps boundary
+				if (label === DEPS) state = "dependencies";
+				break;
+			case "dependencies":
+				if (label === COLON) state = "dependencies:";
+				else if (label !== SPACE) state = null;
+				break;
+			case "dependencies:":
+				if (label === BEGIN_SECTION) state = "dependencies: [";
+				else if (label !== SPACE) state = null;
+				break;
+			case "dependencies: [":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				} else if (label === TRAITS_LABEL) state = "traits:";
+				break;
+			case ".package(":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === URL_KEY) state = ".package(url";
+				else if (label === PACKAGE) yieldDep();
+				break;
+			case ".package(url":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === COLON) state = ".package(url:";
+				else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case ".package(url:":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === STRING_LITERAL) {
+					packageName = substr.replace(regEx(/^"/), "").replace(regEx(/"$/), "");
+					state = ".package(url: [depName]";
+				} else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case ".package(url: [depName]":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === COMMA) state = ".package(url: [depName],";
+				else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case ".package(url: [depName],":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === FROM) {
+					currentValue = substr;
+					state = ".package(url: [depName], from";
+				} else if (label === STRING_LITERAL) {
+					currentValue = substr;
+					state = ".package(url: [depName], [value]";
+				} else if (label === RANGE_OP) {
+					currentValue = substr;
+					state = ".package(url: [depName], [rangeFrom][rangeOp]";
+				} else if (label === EXACT_VERSION) state = ".package(url: [depName], .exact(";
+				else if (label === EXACT_VERSION_LABEL) state = ".package(url: [depName], exact:";
+				else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case ".package(url: [depName], .exact(":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === STRING_LITERAL) {
+					currentValue = substr.slice(1, substr.length - 1);
+					yieldDep();
+				} else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case ".package(url: [depName], exact:":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === STRING_LITERAL) {
+					currentValue = substr.slice(1, substr.length - 1);
+					yieldDep();
+					state = "dependencies: [";
+				} else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case ".package(url: [depName], from":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === COLON) {
+					currentValue += substr;
+					state = ".package(url: [depName], from:";
+				} else if (label === SPACE) currentValue += substr;
+				else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case ".package(url: [depName], from:":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === STRING_LITERAL) {
+					currentValue += substr;
+					yieldDep();
+					state = "dependencies: [";
+				} else if (label === SPACE) currentValue += substr;
+				else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case ".package(url: [depName], [value]":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === RANGE_OP) {
+					currentValue += substr;
+					state = ".package(url: [depName], [rangeFrom][rangeOp]";
+				} else if (label === SPACE) currentValue += substr;
+				else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case ".package(url: [depName], [rangeFrom][rangeOp]":
+				if (label === END_SECTION) {
+					yieldDep();
+					state = null;
+				} else if (label === STRING_LITERAL) {
+					currentValue += substr;
+					state = "dependencies: [";
+				} else if (label === SPACE) currentValue += substr;
+				else if (label === PACKAGE) {
+					yieldDep();
+					state = ".package(";
+				}
+				break;
+			case "traits:": if (label === TRAITS_CONSUME_TO_NEXT_PACKAGE) {
+				yieldDep();
+				state = ".package(";
+			}
+		}
+		restStr = restStr.slice(idx + len);
+		match = getMatch(restStr, state);
+	}
+	return deps.length ? result : null;
+}
+//#endregion
+export { extractPackageFile };
+
+//# sourceMappingURL=extract.js.map
